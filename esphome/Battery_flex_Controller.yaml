@@ -1,0 +1,144 @@
+esphome:
+  name: batteryflexcontroller
+  friendly_name: Battery flex Controller
+  platformio_options:
+    lib_deps:
+      - me-no-dev/AsyncTCP
+          
+external_components:
+  - source: ./components
+    
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+    
+time:
+  - platform: homeassistant
+    id: current_time
+
+logger:
+  level: INFO
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+ota:
+  platform: esphome
+    
+sensor:
+  - platform: battery_flex
+    grid_power_raw: grid_power_raw
+    battery_power_raw: battery_power_raw
+    battery_soc: battery_soc
+    battery_soh: battery_soh
+    battery_capacity: battery_capacity
+    battery_operation: battery_operation
+    
+  #
+  # raw values for internal use only
+  #
+  - platform: template
+    name: "Grid Power Raw"
+    id: grid_power_raw
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            auto g = id(grid_power_raw).state;
+            id(grid_power_consumed).publish_state(g > 0 ? g : 0);
+            id(grid_power_provided).publish_state(g < 0 ? -g : 0);
+
+  - platform: template
+    name: "Battery Power Raw"
+    id: battery_power_raw
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    internal: true
+    on_value:
+      then:
+        - lambda: |-
+            auto b = id(battery_power_raw).state;
+            id(battery_power_consumed).publish_state(b < 0 ? -b : 0);
+            id(battery_power_provided).publish_state(b > 0 ? b : 0);
+
+  # SoC
+  - platform: template
+    name: "Solarbatterie SoC"
+    id: battery_soc
+    unit_of_measurement: "%"
+    icon: "mdi:battery-heart"
+    accuracy_decimals: 0
+    
+  # SoH
+  - platform: template
+    name: "Solarbatterie SoH"
+    id: battery_soh
+    unit_of_measurement: "%"
+    icon: "mdi:heart-pulse"
+    accuracy_decimals: 1
+    
+  # capacity
+  - platform: template
+    name: "Solarbatterie Kapazität"
+    id: battery_capacity
+    unit_of_measurement: "Wh"
+    icon: "mdi:battery-plus"
+    accuracy_decimals: 1
+    
+  # operating hours
+  - platform: template
+    name: "Solarbatterie Betriebsstunden"
+    id: battery_operation
+    unit_of_measurement: "h"
+    icon: "mdi:cog"
+    accuracy_decimals: 1
+
+  # grid power consumed
+  - platform: template
+    name: "Netz Bezug"
+    id: grid_power_consumed
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    icon: "mdi:transmission-tower-import"
+    lambda: return 0;
+    update_interval: never
+
+  # grid power provided
+  - platform: template
+    name: "Netz Einspeisung"
+    id: grid_power_provided
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    icon: "mdi:transmission-tower-export"    
+    lambda: return 0;
+    update_interval: never
+
+  # battery power consumed
+  - platform: template
+    name: "Solarbatterie Bezug"
+    id: battery_power_consumed
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    icon: "mdi:battery-arrow-down"
+    lambda: return 0;
+    update_interval: never
+
+  # battery power provided
+  - platform: template
+    name: "Solarbatterie Einspeisung"
+    id: battery_power_provided
+    unit_of_measurement: "W"
+    accuracy_decimals: 1
+    icon: "mdi:battery-arrow-up"    
+    lambda: return 0;
+    update_interval: never
+
+    
+web_server:
+  port: 80    
+
+api:
