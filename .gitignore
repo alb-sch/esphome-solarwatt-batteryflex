@@ -5,4 +5,7 @@ secrets.yaml
 .esphome/
 
 # ignore Python cache
-__pycache__
+**/__pycache__/
+
+# ignore Python venv
+venv

@@ -38,12 +38,12 @@ namespace esphome
 	template<typename TypeValue>
 	static void
 	publishSensor
-	 (const JsonDocument&	p_doc,
-	  const char*			p_name,
-	  sensor::Sensor*		p_sensor)
+	 (const BatteryFlexSensor::JsonDocument&	p_jsonDoc,
+	  const char*								p_name,
+	  sensor::Sensor*							p_sensor)
 	
 	{
-	  TypeValue actValue	= p_doc[p_name].as<TypeValue>();
+	  TypeValue actValue	= p_jsonDoc[p_name].as<TypeValue>();
 	  
 	  publishSensor<TypeValue>(actValue, p_name, p_sensor);
 	}
@@ -55,6 +55,8 @@ namespace esphome
 	 PollingComponent(PERIOD_MS),
 	 
 	 m_indexPack(0),
+	 
+	 m_disconnectTimeout(false),
 	 
 	 m_grid_power_raw_sensor(nullptr),
      m_battery_power_raw_sensor(nullptr),
@@ -85,8 +87,35 @@ namespace esphome
 	 ()
 	
 	{
-	  scheduleClientStatus();
-	  scheduleClientBatteryPacks(); 
+	  // check if there's any connection to Battery Flex pending
+	  if ((false == m_clientStatus.connected()) &&
+		  (false == m_clientPacks.connected()))
+	  {	
+	  	const std::string	actAddress(IP_BATTERY_FLEX);
+		
+		// ensure, that buffer holding Json document is cleared
+		m_jsonDocument.clear();
+		
+		// mark flag for regular disconnect
+		m_disconnectTimeout	= false;
+		
+		// check if ready to access battery packs
+		if (0 == m_timerPacks)
+		{
+          // open connection to get information about batterie packs
+	      m_clientPacks.connect(actAddress.c_str(), HTTP_PORT);
+		}
+		else
+		{
+		  // open connection to get status of Client
+		  m_clientStatus.connect(actAddress.c_str(), HTTP_PORT);
+		}
+
+		// increase timer to access battery pack
+	    m_timerPacks++;
+	  
+	    m_timerPacks		%= PERIOD_PACK;
+	  }
     }
 	
 	
@@ -153,6 +182,9 @@ namespace esphome
 							+ std::string(HTTP_HOST) + " " + std::string(IP_BATTERY_FLEX) + std::string(HTTP_EOL)
  							+ std::string(HTTP_CONNECTION) + std::string(HTTP_HEADER_TERMINATOR);
 							
+	  // setup timeout
+	  m_clientStatus.setRxTimeout(GET_TIMEOUT_MS);
+							
 	  // setup callback for connect
 	  m_clientStatus.onConnect
 	   ([this]
@@ -184,46 +216,68 @@ namespace esphome
 			}
 			else
 			{
-			  ESP_LOGW("battery_flex", "m_clientStatus.onData: unable to close Client");
+			  ESP_LOGE("battery_flex", "m_clientStatus.onData: unable to close Client");
 			}
 		  }
 		},
 		nullptr);
+				
+	  m_clientStatus.onTimeout
+	   ([this](void *p_arg, AsyncClient *p_client, uint32_t p_time)
+		 
+		{
+		  ESP_LOGW("battery_flex", "m_clientStatus.onTimeout: Timeout");
+		  
+		  if (nullptr != p_client)
+		  {
+			// mark as disconnect due to timeout
+			m_disconnectTimeout	= true;
+			
+			p_client -> close();
+		  }
+		  else
+		  {
+			ESP_LOGE("battery_flex", "m_clientStatus.onTimeout: invalid client");
+		  }
+		}
+	   );
 
 	  m_clientStatus.onDisconnect
 	   ([this]
 	     (void* p_arg, AsyncClient* p_client)
 		 
 		{
-		  // get access to payload
-		  const char*		actPayload					= m_bufferStatus.getPayload();
-		  
-		  // check if payload is available
-		  if (nullptr != actPayload)
+		  // skip processing in case of timeout
+		  if (false == m_disconnectTimeout)
 		  {
-		    // read values from JSON Object
- 		    JsonDocument	actDoc;
-	
-			DeserializationError actError				= deserializeJson(actDoc, actPayload);
+		    // get access to payload
+		    const char*		actPayload					= m_bufferStatus.getPayload();
+		  
+		    // check if payload is available
+		    if (nullptr != actPayload)
+		    {
+		      // read values from JSON Object
+			  DeserializationError actError				= deserializeJson(m_jsonDocument, actPayload);
 		
-			if (!actError)
-			{
-			  publishSensor<int>(actDoc, "SoC", m_battery_soc_sensor);
-			  publishSensor<float>(actDoc, "PGrid", m_grid_power_raw_sensor);
-			  publishSensor<float>(actDoc, "PBat", m_battery_power_raw_sensor);
-			}
-			else
-			{
-			  ESP_LOGW("battery_flex", "m_clientStatus.onDisconnect: unable to deserialize Json: %s", actError.c_str());
-			}
-		  }
-		  else
-		  {
-			ESP_LOGW("battery_flex", "m_clientStatus.onDisconnect: unable to detect payload");
-		  }
+			  if (!actError)
+			  {
+			    publishSensor<int>(m_jsonDocument, "SoC", m_battery_soc_sensor);
+			    publishSensor<float>(m_jsonDocument, "PGrid", m_grid_power_raw_sensor);
+			    publishSensor<float>(m_jsonDocument, "PBat", m_battery_power_raw_sensor);
+			  }
+			  else
+			  {
+			    ESP_LOGW("battery_flex", "m_clientStatus.onDisconnect: unable to deserialize Json: %s", actError.c_str());
+			  }
+		    }
+		    else
+		    {
+			  ESP_LOGW("battery_flex", "m_clientStatus.onDisconnect: unable to detect payload");
+		    }
 		  
-		  // finally clear buffer
-		  m_bufferStatus.clear();
+		    // finally clear buffer
+		    m_bufferStatus.clear();
+		  }
 	    },
 		nullptr);	
 	}
@@ -250,6 +304,9 @@ namespace esphome
 		// setup State of Health related to pack to invalid
 		m_dataPacks[actIndex].m_soh		= -1.0;
 	  }
+							
+	  // setup timeout
+	  m_clientPacks.setRxTimeout(GET_TIMEOUT_MS);
 	  	  							
 	  // setup callback for connect
 	  m_clientPacks.onConnect
@@ -282,120 +339,94 @@ namespace esphome
 			}
 			else
 			{
-			  ESP_LOGW("battery_flex", "m_clientPacks.onData: unable to close Client");
+			  ESP_LOGE("battery_flex", "m_clientPacks.onData: unable to close Client");
 			}
 		  }
 		},
 		nullptr);
+				
+	  m_clientPacks.onTimeout
+	   ([this](void *p_arg, AsyncClient *p_client, uint32_t p_time)
+		 
+		{
+		  ESP_LOGW("battery_flex", "m_clientPacks.onTimeout: Timeout");
+		  
+		  if (nullptr != p_client)
+		  {
+			// mark as disconnect due to timeout
+			m_disconnectTimeout	= true;
+			
+			p_client -> close();
+		  }
+		  else
+		  {
+			ESP_LOGE("battery_flex", "m_clientPacks.onTimeout: invalid client");
+		  }
+		} 
+	   );
 
 	  m_clientPacks.onDisconnect
 	   ([this]
 	     (void* p_arg, AsyncClient* p_client)
 		 
 		{
-		  // get access to payload
-		  const char*		actPayload					= m_bufferPack.getPayload();
-		  
-		  // check if payload is available
-		  if (nullptr != actPayload)
+		  // skip processing in case of timeout
+		  if (false == m_disconnectTimeout)
 		  {
-		    // read values from JSON Object
- 		    JsonDocument	actDoc;
-	
-			DeserializationError actError				= deserializeJson(actDoc, actPayload);
+		    // get access to payload
+		    const char*		actPayload					= m_bufferPack.getPayload();
+		  
+		    // check if payload is available
+		    if (nullptr != actPayload)
+		    {
+		      // read values from JSON Object
+			  DeserializationError actError				= deserializeJson(m_jsonDocument, actPayload);
 		
-			if (!actError)
-			{
-			  m_dataPacks[m_indexPack].m_serialNumber	= actDoc["PK"]["SN"].as<std::string>();
-			  m_dataPacks[m_indexPack].m_soh			= actDoc["PK"]["SOH"].as<float>();
+			  if (!actError)
+			  {
+			    m_dataPacks[m_indexPack].m_serialNumber	= m_jsonDocument["PK"]["SN"].as<std::string>();
+			    m_dataPacks[m_indexPack].m_soh			= m_jsonDocument["PK"]["SOH"].as<float>();
 			  
-			  // calculate overall SoH of battery
-			  m_soh										= std::min(m_soh, m_dataPacks[m_indexPack].m_soh);
+			    // calculate overall SoH of battery
+			    m_soh									= std::min(m_soh, m_dataPacks[m_indexPack].m_soh);
 			  
-			  // publish SoH
-			  publishSensor<float>(m_soh, "SoH", m_battery_soh_sensor);
-			  
-			  
-			  // calculate remaining capacity of battery
-			  float	actCapacity							= NUM_PACKS * PACK_CAPACITY * m_soh / 100;
-			  
-			  // publish remaining capacity
-			  publishSensor<float>(actCapacity,"Capacity", m_battery_capacity_sensor);
+			    // publish SoH
+			    publishSensor<float>(m_soh, "SoH", m_battery_soh_sensor);
 			  
 			  
-			  // calculate opererating hours of battery
-			  float actOperatingHours					= actDoc["PK"]["OP"].as<float>() / HOURS_IN_SEC;
+			    // calculate remaining capacity of battery
+			    float	actCapacity						= NUM_PACKS * PACK_CAPACITY * m_soh / 100;
 			  
-			  // publish operation hours
-			  publishSensor<float>(actOperatingHours, "Operation", m_battery_operation_sensor);
-			}
-			else
-			{
-			  ESP_LOGW("battery_flex", "m_clientPacks.onDisconnect: unable to deserialize Json: %s", actError.c_str());
-			}
-		  }
-		  else
-		  {
-			ESP_LOGW("battery_flex", "m_clientPacks.onDisconnect: unable to detect payload");
-		  }
+			    // publish remaining capacity
+			    publishSensor<float>(actCapacity,"Capacity", m_battery_capacity_sensor);
+			  
+			  
+			    // calculate opererating hours of battery
+			    float actOperatingHours					= m_jsonDocument["PK"]["OP"].as<float>() / HOURS_IN_SEC;
+			  
+			    // publish operation hours
+			    publishSensor<float>(actOperatingHours, "Operation", m_battery_operation_sensor);
+			  }
+			  else
+			  {
+			    ESP_LOGW("battery_flex", "m_clientPacks.onDisconnect: unable to deserialize Json: %s", actError.c_str());
+			  }
+		    }
+		    else
+		    {
+			  ESP_LOGW("battery_flex", "m_clientPacks.onDisconnect: unable to detect payload");
+		    }
 		  
-		  // finally clear buffer
-		  m_bufferPack.clear();
+		    // finally clear buffer
+		    m_bufferPack.clear();
 		  
-		  // move to next battery pack
-		  m_indexPack++;
+		    // move to next battery pack
+		    m_indexPack++;
 		  
-		  m_indexPack						%= NUM_PACKS;
-	    },
+		    m_indexPack						%= NUM_PACKS;
+	      }
+		},
 		nullptr);	
-	}
-	
-	
-	void
-	BatteryFlexSensor::scheduleClientStatus
-	 ()
-	 
-	{
-	  // check if connection is closed
-	  if (false == m_clientStatus.connected())
-	  {
-		const std::string	actAddress(IP_BATTERY_FLEX);
-		
-		// re-open connection
-		m_clientStatus.connect(actAddress.c_str(), HTTP_PORT);
-	  }
-	  else
-	  {
-		ESP_LOGW("battery_flex", "Client Status still connected – skipping new request");
-	  }
-	}	
-		
-	
-	void
-	BatteryFlexSensor::scheduleClientBatteryPacks
-	 ()
-	 
-	{
-	  // check if ready to access battery packs
-	  if (0 == m_timerPacks)
-	  {
-	    // check if connection is closed
-		if (false == m_clientPacks.connected())
-	    {
-		  const std::string	actAddress(IP_BATTERY_FLEX);
-		
-		  // re-open connection
-		  m_clientPacks.connect(actAddress.c_str(), HTTP_PORT);
-	    }
-	    else
-	    {
-		  ESP_LOGW("battery_flex", "Client Packs still connected – skipping new request");
-	    }
-	  }
-	  
-	  m_timerPacks++;
-	  
-	  m_timerPacks	%= PERIOD_PACK;
 	}
   }  // namespace battery_flex
 }  // namespace esphome

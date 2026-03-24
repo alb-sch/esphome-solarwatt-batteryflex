@@ -37,11 +37,17 @@ namespace esphome
 		inline static constexpr int					PERIOD_MS				= 1000;   	// polling interval
 		inline static constexpr int					PERIOD_PACK				= 5;
 		
+		inline static constexpr int					GET_TIMEOUT_MS			= 2 *  PERIOD_MS;
+		
+		inline static constexpr size_t				SIZE_JSON_DOC			= 8192;
+		
 		inline static constexpr	size_t				NUM_PACKS				= 6;
 		inline static constexpr float				PACK_CAPACITY			= 2400;		// capacity per pack in Wh
 		
 		inline static constexpr float				HOURS_IN_SEC			= 3600;
-
+		
+			
+		using JsonDocument													= StaticJsonDocument<SIZE_JSON_DOC>;
 	
 		BatteryFlexSensor();
 
@@ -66,9 +72,8 @@ namespace esphome
 	
 		void setupClientStatus();
 		void setupClientBatteryPacks();
-		
-		void scheduleClientStatus();
-		void scheduleClientBatteryPacks();
+
+		JsonDocument								m_jsonDocument;
 	
 	    // members to deal with status information
 		std::string									m_httpCommandStatus;
@@ -83,6 +88,8 @@ namespace esphome
 		std::array<std::string, NUM_PACKS>			m_httpCommandPacks;
 		std::array<PackData, NUM_PACKS>				m_dataPacks;
 
+		bool										m_disconnectTimeout;
+		
 		Buffer										m_bufferPack;
 			
 	    AsyncClient									m_clientPacks;

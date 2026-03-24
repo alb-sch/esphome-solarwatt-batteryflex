@@ -58,6 +58,19 @@ sensor:
     lambda: "return id(battery_charge_raw);"
 
 ---
+## 🛠 Prerequisits
+
+This project requires a specific ESPHome version to ensure a stable and reproducible build environment.
+Newer ESPHome releases introduce changes to AsyncIO/AsyncTCP that can break the custom webserver used by the controller.
+
+Before building, make sure the correct ESPHome version is installed:
+```
+esphome version --install 2024.6.6
+```
+
+This prevents ESPHome from auto‑upgrading and ensures that the build environment remains consistent over time.
+
+---
 
 ## 🤝 Contributing
 
